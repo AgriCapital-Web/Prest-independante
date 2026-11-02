@@ -4,6 +4,20 @@ import { supabase } from "./lib/supabase";
 type Quote={id:string;reference:string;status:string;version:number;issued_at:string|null;valid_until:string|null;total_amount:number;currency:string;observations:string|null;client_phone:string;items?:{designation:string;quantity:number;unit:string;unit_price:number;amount:number}[]};
 const money=(v:number)=>new Intl.NumberFormat("fr-FR",{style:"currency",currency:"XOF",maximumFractionDigits:0}).format(v||0);
 const labels:Record<string,string>={emise:"À consulter",acceptee:"Accepté",modification_demandee:"Modification demandée",refusee:"Refusé",en_cours:"Intervention en cours",terminee:"Terminée",expiree:"Expiré",annulee:"Annulé"};
+function authErrorMessage(error: any, stage: "send" | "verify") {
+  const code = String(error?.code || error?.name || "").toLowerCase();
+  const message = String(error?.message || "").toLowerCase();
+  const status = Number(error?.status || error?.statusCode || 0);
+  if (code.includes("abort") || message.includes("abort")) return "La demande a été interrompue. Réessayez.";
+  if (code.includes("network") || message.includes("fetch") || message.includes("network") || message.includes("failed to")) return "Erreur réseau : vérifiez votre connexion Internet puis réessayez.";
+  if (status === 429 || code.includes("rate") || message.includes("rate limit") || message.includes("too many")) return "Trop de tentatives. Patientez quelques minutes avant de réessayer.";
+  if (status === 500 || status === 502 || status === 503 || status === 504) return "Le service d’authentification est momentanément indisponible. Réessayez plus tard.";
+  if (stage === "send" && (message.includes("sms") || message.includes("provider") || message.includes("delivery"))) return "L’envoi du SMS a échoué. Vérifiez la configuration du fournisseur SMS ou réessayez plus tard.";
+  if (stage === "verify" && (message.includes("expired") || message.includes("otp_expired"))) return "Ce code a expiré. Demandez un nouveau code SMS.";
+  if (stage === "verify" && (message.includes("invalid") || message.includes("otp") || message.includes("token"))) return "Code incorrect. Vérifiez les 6 chiffres ou demandez un nouveau code.";
+  if (message.includes("not authorized") || message.includes("not allowed") || message.includes("disabled")) return "Ce numéro ou cette méthode de connexion n’est pas autorisé. Contactez AgriCapital.";
+  return stage === "send" ? "Impossible d’envoyer le code pour le moment. Vérifiez le numéro et réessayez." : "Impossible de vérifier le code pour le moment. Réessayez.";
+}
 const countryNames = new Intl.DisplayNames(["fr"], { type: "region" });
 const countryOptions = getCountries().map(code => ({ code, name: countryNames.of(code) || code, calling: "+" + getCountryCallingCode(code) })).sort((a,b)=>a.name.localeCompare(b.name,"fr"));
 export default function App(){const [country,setCountry]=useState("CI");const [localPhone,setLocalPhone]=useState("");const phone = useMemo(()=>{const local=localPhone.replace(/[^0-9]/g,"");return local ? "+"+getCountryCallingCode(country)+local : "";},[country,localPhone]);const [otp,setOtp]=useState("");const [sent,setSent]=useState(false);const [session,setSession]=useState(false);const [quotes,setQuotes]=useState<Quote[]>([]);const [selected,setSelected]=useState<Quote|null>(null);const [reason,setReason]=useState("");const [action,setAction]=useState<"refuse"|"change"|null>(null);const [busy,setBusy]=useState(false);const [msg,setMsg]=useState("");
@@ -18,7 +32,7 @@ async function send(){
   setBusy(true);
   try{
     const {error}=await supabase.auth.signInWithOtp({phone:parsed.number});
-    if(error){setMsg("Échec de l’envoi du code SMS : "+error.message);return;}
+    if(error){setMsg(authErrorMessage(error,"send"));return;}
     setSent(true);
     setMsg("Demande d’envoi acceptée. Si ce numéro est autorisé et que le service SMS est configuré, vous recevrez le code.");
   }catch(e){
@@ -34,7 +48,7 @@ async function verify(){
   setBusy(true);
   try{
     const {error}=await supabase.auth.verifyOtp({phone:parsed.number,token:otp.trim(),type:"sms"});
-    if(error){setMsg("Code invalide ou expiré : "+error.message);return;}
+    if(error){setMsg(authErrorMessage(error,"verify"));return;}
     setMsg("Vérification réussie.");
   }catch(e){
     setMsg("Impossible de vérifier le code. Vérifiez votre connexion puis réessayez.");
