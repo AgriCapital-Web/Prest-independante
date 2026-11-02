@@ -30,7 +30,7 @@ async function verify(){
   if(!supabase){setMsg("Connexion au service d’authentification indisponible. Vérifiez la configuration Supabase.");return;}
   const parsed=phone ? parsePhoneNumberFromString(phone) : undefined;
   if(!parsed||!parsed.isValid()){setMsg("Le numéro de téléphone n’est pas valide.");return;}
-  if(!/^\\d{6}$/.test(otp.trim())){setMsg("Saisissez le code SMS à 6 chiffres.");return;}
+  if(!/^\d{6}$/.test(otp.trim())){setMsg("Saisissez le code SMS à 6 chiffres.");return;}
   setBusy(true);
   try{
     const {error}=await supabase.auth.verifyOtp({phone:parsed.number,token:otp.trim(),type:"sms"});
