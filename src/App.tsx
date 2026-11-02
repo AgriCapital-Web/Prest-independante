@@ -12,7 +12,7 @@ function authErrorMessage(error: any, stage: "send" | "verify") {
   if (code.includes("network") || message.includes("fetch") || message.includes("network") || message.includes("failed to")) return "Erreur réseau : vérifiez votre connexion Internet puis réessayez.";
   if (status === 429 || code.includes("rate") || message.includes("rate limit") || message.includes("too many")) return "Trop de tentatives. Patientez quelques minutes avant de réessayer.";
   if (status === 500 || status === 502 || status === 503 || status === 504) return "Le service d’authentification est momentanément indisponible. Réessayez plus tard.";
-  if (stage === "send" && (message.includes("sms") || message.includes("whatsapp") || message.includes("provider") || message.includes("delivery"))) return "L’envoi WhatsApp a échoué. Vérifiez la configuration du canal WhatsApp puis réessayez.";
+  if (stage === "send" && (message.includes("sms") || message.includes("whatsapp") || message.includes("provider") || message.includes("delivery"))) return "Échec de l’envoi via WhatsApp. Aucun SMS ne sera envoyé. Vérifiez le fournisseur WhatsApp configuré dans Supabase Auth et réessayez.";
   if (stage === "verify" && (message.includes("expired") || message.includes("otp_expired"))) return "Ce code a expiré. Demandez un nouveau code de vérification.";
   if (stage === "verify" && (message.includes("invalid") || message.includes("otp") || message.includes("token"))) return "Code incorrect. Vérifiez les 6 chiffres ou demandez un nouveau code.";
   if (message.includes("not authorized") || message.includes("not allowed") || message.includes("disabled")) return "Ce numéro ou cette méthode de connexion n’est pas autorisé. Contactez AgriCapital.";
@@ -35,9 +35,9 @@ async function send(){
     const {error}=await supabase.auth.signInWithOtp({phone:parsed.number,options:{channel:"whatsapp"}});
     if(error){setMsg(authErrorMessage(error,"send"));return;}
     setSent(true);
-    setOtp("");\n    setMsg("Vérifiez WhatsApp pour recevoir votre code.");
+    setOtp("");\n    setMsg("Code demandé via WhatsApp uniquement. Consultez le WhatsApp appairé à ce numéro.");
   }catch(e){
-    setMsg("Impossible de contacter le service d’authentification. Vérifiez votre connexion puis réessayez.");
+    setMsg("Impossible de joindre le service WhatsApp d’authentification. Aucun SMS ne sera envoyé. Vérifiez votre connexion puis réessayez.");
   }finally{setBusy(false);}
 }
 async function verify(){
