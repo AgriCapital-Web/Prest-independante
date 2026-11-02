@@ -7,24 +7,112 @@ const sha=async(v:string)=>{const b=await crypto.subtle.digest("SHA-256",new Tex
 const normalize=(v:any)=>{const d=String(v||"").replace(/\D/g,"").replace(/^00/,"");if(d.length<8||d.length>15)throw Error("Numéro de téléphone invalide.");if(d.startsWith("225"))return d;return "225"+d;};
 const e164=(v:any)=>{const d=String(v||"").replace(/\D/g,"").replace(/^00/,"");if(!d)throw Error("Numéro absent");return "+"+(d.startsWith("225")?d:"225"+d);};
 const secret=()=>Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS")||"{}").default||"";
-async function sender(admin:any){
- const [{data:key,error:ke},{data:phone,error:pe}]=await Promise.all([admin.rpc("senndo_get_secret",{p_name:"senndo_api_key"}),admin.rpc("senndo_get_secret",{p_name:"senndo_whatsapp_sender_phone"})]);
- if(ke||pe||typeof key!=="string"||!key||typeof phone!=="string"||!phone.trim())throw Error("La configuration Senndo WhatsApp existante est indisponible.");
- const resp=await fetch("https://api.senndo.com/v1/wa/sessions",{headers:{authorization:"Bearer "+key,accept:"application/json"},signal:AbortSignal.timeout(15000)});
- const payload=await resp.json().catch(()=>null);if(!resp.ok)throw Error("Lecture de la session WhatsApp Senndo impossible (HTTP "+resp.status+").");
- const arr=(v:any):any[]=>Array.isArray(v)?v:v&&typeof v==="object"?Object.values(v):[];
- const sessions=[...arr(payload),...arr(payload?.sessions),...arr(payload?.data?.sessions),...arr(payload?.data),...arr(payload?.items),...arr(payload?.results)];
- const norm=(v:any)=>String(v||"").split("@")[0].split(":")[0].replace(/\D/g,"").replace(/^225/,"");
- const connected=sessions.filter(x=>["connected","open","ready","authenticated"].includes(String(x?.status||x?.state||x?.connectionStatus||"").toLowerCase()));
- const wanted=norm(phone);
- const matches=connected.filter(x=>[x.phoneNumber,x.phone_number,x.phone,x.displayPhoneNumber,x.number,x.jid,x.user?.id,x.me?.id,x.session?.phoneNumber].some(v=>v&&norm(v)===wanted));
- const chosen=matches.length===1?matches[0]:(matches.length===0&&connected.length===1?connected[0]:null);
- const id=chosen?.senderSessionId||chosen?.sender_session_id||chosen?.sessionId||chosen?.session_id||chosen?.uuid||chosen?.id;
- if(!chosen||!id)throw Error("Aucune session WhatsApp Senndo appairée et connectée correspondant au numéro configuré.");
- return {key,sessionId:String(id)};
+async function resolveSender(admin: any): Promise<{ key: string; sessionId: string }> {
+  const [{ data: apiKey, error: apiError }, { data: configuredPhone, error: phoneError }] = await Promise.all([
+    admin.rpc("senndo_get_secret", { p_name: "senndo_api_key" }),
+    admin.rpc("senndo_get_secret", { p_name: "senndo_whatsapp_sender_phone" }),
+  ]);
+  if (apiError || typeof apiKey !== "string" || !apiKey) throw new Error("Clé API Senndo non configurée");
+  if (phoneError || typeof configuredPhone !== "string" || !configuredPhone.trim()) throw new Error("Numéro de session WhatsApp Senndo non configuré en base.");
+
+  const response = await fetch("https://api.senndo.com/v1/wa/sessions", {
+    method: "GET",
+    headers: { authorization: "Bearer " + apiKey, accept: "application/json" },
+    signal: AbortSignal.timeout(15000),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) throw new Error("Impossible de lire les sessions WhatsApp Senndo (HTTP " + response.status + ").");
+
+  const asArray = (value: any): any[] => Array.isArray(value) ? value : value && typeof value === "object" ? Object.values(value) : [];
+  const rawSessions = [
+    ...asArray(payload),
+    ...asArray(payload?.sessions),
+    ...asArray(payload?.data?.sessions),
+    ...asArray(payload?.data),
+    ...asArray(payload?.items),
+    ...asArray(payload?.results),
+    ...asArray(payload?.data?.items),
+    ...asArray(payload?.data?.results),
+    ...asArray(payload?.session),
+    ...asArray(payload?.data?.session),
+  ];
+  const seenSessions = new Set<any>();
+  const sessions = rawSessions
+    .filter((item: any) => item && typeof item === "object" && !seenSessions.has(item) && (seenSessions.add(item), true))
+    .map((item: any) => {
+      const nested = item.session && typeof item.session === "object" ? item.session
+        : item.data?.session && typeof item.data.session === "object" ? item.data.session : null;
+      return nested ? {
+        ...item, ...nested,
+        id: nested.id ?? item.id,
+        sessionId: nested.sessionId ?? nested.session_id ?? item.sessionId ?? item.session_id,
+        senderSessionId: nested.senderSessionId ?? nested.sender_session_id ?? item.senderSessionId ?? item.sender_session_id,
+        uuid: nested.uuid ?? item.uuid,
+      } : item;
+    });
+
+  const nestedObjects = (root: any, depth = 0): any[] => {
+    if (!root || typeof root !== "object" || depth > 5) return [];
+    return [root, ...Object.values(root).flatMap((value: any) => nestedObjects(value, depth + 1))];
+  };
+  const technicalSessionId = (session: any): string => {
+    const objects = nestedObjects(session);
+    const preferred = [
+      "senderSessionId", "sender_session_id", "sessionId", "session_id",
+      "uniqueSessionId", "unique_session_id", "sessionKey", "session_key",
+      "sessionUid", "session_uid", "sessionIdentifier", "session_identifier",
+      "instanceId", "instance_id", "deviceId", "device_id", "sid", "uuid", "id",
+    ];
+    for (const key of preferred) {
+      const value = objects.map((object: any) => object?.[key]).find((candidate: any) =>
+        (typeof candidate === "string" && candidate.trim()) ||
+        (typeof candidate === "number" && Number.isFinite(candidate)));
+      if (value !== undefined) return String(value).trim();
+    }
+    return "";
+  };
+  const normalizePhone = (value: unknown) => {
+    const rawPhone = String(value ?? "").split("@")[0].split(":")[0].replace(/\D/g, "");
+    if (!rawPhone) return "";
+    const national = rawPhone.startsWith("225") ? rawPhone.slice(3) : rawPhone;
+    if (national.length === 10 && /^0[157]\d{8}$/.test(national)) return "225" + national.slice(-8);
+    if (national.length === 8) return "225" + national;
+    return rawPhone;
+  };
+  const phoneValues = (session: any) => [
+    session?.phoneNumber, session?.phone_number, session?.phone, session?.displayPhoneNumber,
+    session?.display_phone_number, session?.number, session?.jid, session?.user?.id,
+    session?.user?.jid, session?.me?.id, session?.me?.jid, session?.account?.phone,
+    session?.account?.phoneNumber, session?.profile?.phone, session?.whatsapp?.phone,
+    session?.session?.phoneNumber, session?.session?.phone_number, session?.session?.user?.id,
+    session?.session?.me?.id, session?.creds?.me?.id, session?.authState?.creds?.me?.id,
+  ].filter((value) => (typeof value === "string" || typeof value === "number") && String(value).trim());
+  const statusOf = (session: any) => String(
+    session?.status ?? session?.state ?? session?.connectionStatus ?? session?.connection_status ??
+    session?.connection?.status ?? session?.session?.status ?? ""
+  ).trim().toLowerCase();
+  const connected = sessions.filter((session: any) => ["connected", "open", "ready", "authenticated"].includes(statusOf(session)));
+  const senderDigits = normalizePhone(configuredPhone);
+  if (!senderDigits) throw new Error("Le numéro de session WhatsApp Senndo configuré est invalide.");
+  const matches = connected.filter((session: any) => phoneValues(session).some((value: unknown) => normalizePhone(value) === senderDigits));
+
+  // Senndo peut omettre le téléphone d'une session. Si une seule session est connectée,
+  // elle est non ambiguë et peut être utilisée; plusieurs sessions exigent une correspondance exacte.
+  const session = matches.length === 1 ? matches[0] : (matches.length === 0 && connected.length === 1 ? connected[0] : null);
+  const senderSessionId = session ? technicalSessionId(session) : "";
+  if (!session || !senderSessionId) {
+    throw new Error(connected.length === 0
+      ? "Aucune session WhatsApp connectée n’a été trouvée dans Senndo."
+      : connected.length > 1 && matches.length !== 1
+        ? "Plusieurs sessions WhatsApp sont connectées sans correspondance unique avec le numéro configuré."
+        : "La session WhatsApp est connectée, mais Senndo ne fournit pas son identifiant technique.");
+  }
+  return { key: apiKey, sessionId: senderSessionId };
 }
+
+
 async function sendWhatsApp(admin:any,to:string,code:string,otpId:string){
- const {key,sessionId}=await sender(admin);
+ const {key,sessionId}=await resolveSender(admin);
  const response=await fetch("https://api.senndo.com/v1/messages",{method:"POST",headers:{authorization:"Bearer "+key,"content-type":"application/json",accept:"application/json"},body:JSON.stringify({channel:"whatsapp_baileys",to,text:"*AgriCapital 360* | Votre code de vérification : *"+code+"*. Valable 10 minutes. Ne le partagez pas.",senderSessionId:sessionId,idempotencyKey:"ind-service-otp:"+otpId}),signal:AbortSignal.timeout(30000)});
  const payload=await response.json().catch(()=>null);if(!response.ok)throw Error("Senndo a refusé l’envoi WhatsApp (HTTP "+response.status+"). "+String(payload?.message||payload?.error||"").slice(0,200));
 }
