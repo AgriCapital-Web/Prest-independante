@@ -169,6 +169,14 @@ serve(async(req:Request)=>{
    if(q.valid_until&&q.valid_until<new Date().toISOString().slice(0,10)){await admin.from("independent_service_proformas").update({status:"expiree"}).eq("id",quoteId);return json({success:false,error:"Le devis est expiré."},409);}
    const status=kind==="accept"?"acceptee":kind==="refuse"?"refusee":"modification_demandee",event=kind==="accept"?"accepted":kind==="refuse"?"refused":"modification_requested";
    const {error:up}=await admin.from("independent_service_proformas").update({status,accepted_at:kind==="accept"?new Date().toISOString():null,refused_at:kind==="refuse"?new Date().toISOString():null,updated_at:new Date().toISOString()}).eq("id",quoteId).eq("client_id",customerId);if(up)throw up;
+   if(kind==="accept"){
+     const {data:existing,error:lookupError}=await admin.from("independent_service_invoices").select("id").eq("proforma_id",quoteId).neq("status","cancelled").maybeSingle();if(lookupError)throw lookupError;
+     if(!existing){
+       const {data:proforma,error:proformaError}=await admin.from("independent_service_proformas").select("reference,total_amount,currency").eq("id",quoteId).single();if(proformaError)throw proformaError;
+       const invoiceNumber="FAC-"+new Date().toISOString().slice(0,10).replace(/-/g,"")+"-"+String(proforma.reference||quoteId.slice(0,8)).replace(/[^A-Za-z0-9]/g,"").slice(-10).toUpperCase();
+       const {error:invoiceError}=await admin.from("independent_service_invoices").insert({proforma_id:quoteId,invoice_number:invoiceNumber,status:"issued",currency:"XOF",amount_due:proforma.total_amount,amount_paid:0});if(invoiceError)throw invoiceError;
+     }
+   }
    const {error:ev}=await admin.from("independent_service_events").insert({proforma_id:quoteId,event_code:event,actor_type:"customer",reason:reason||null,details:{source:"customer_portal_senndo"}});if(ev)throw ev;
    return json({success:true,status});
   }
