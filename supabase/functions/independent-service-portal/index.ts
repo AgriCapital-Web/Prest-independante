@@ -156,6 +156,10 @@ serve(async(req:Request)=>{
    const {data,error}=await admin.from("independent_service_proformas").select("id,reference,status,version,issued_at,valid_until,total_amount,currency,observations,client_phone,independent_service_items(designation,quantity,unit,unit_price,amount)").eq("client_id",customerId).order("created_at",{ascending:false});if(error)throw error;
    return json({success:true,quotes:(data||[]).map((q:any)=>({...q,items:q.independent_service_items||[]}))});
   }
+  if(action==="invoices"){
+   const {data,error}=await admin.from("independent_service_invoices").select("id,proforma_id,invoice_number,status,currency,amount_due,amount_paid,issued_at,independent_service_proformas!inner(reference,client_id)").eq("independent_service_proformas.client_id",customerId).order("issued_at",{ascending:false});if(error)throw error;
+   return json({success:true,invoices:(data||[]).map((invoice:any)=>({...invoice,quote_reference:invoice.independent_service_proformas?.reference}))});
+  }
   if(action==="reply"){
    const quoteId=String(body.quote_id||""),kind=String(body.action_kind||""),reason=String(body.reason||"").trim();
    if(!["accept","refuse","request_change"].includes(kind))return json({success:false,error:"Action non valide."},400);
