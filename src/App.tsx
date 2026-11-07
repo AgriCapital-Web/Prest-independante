@@ -59,7 +59,7 @@ async function startInvoicePayment(){
   if(error||!data?.success||!data?.payment_id)throw new Error(data?.error||error?.message||"Préparation du paiement impossible.");
   setPendingPayment({id:data.payment_id,invoiceId:payInvoice.id,amount});
   if(!window.openKkiapayWidget)throw new Error("Le module Kkiapay n’est pas chargé. Actualisez la page.");
-  window.openKkiapayWidget({amount,key,position:"center",theme:"#176332",data:{payment_id:data.payment_id,invoice_id:payInvoice.id,invoice_number:payInvoice.invoice_number,source:"prest-independante"},name:"Client AgriCapital",paymentMethods:["momo","card"]});
+  window.openKkiapayWidget({amount,key,position:"center",theme:"#00643C",data:{payment_id:data.payment_id,invoice_id:payInvoice.id,invoice_number:payInvoice.invoice_number,source:"prest-independante"},name:"Client AgriCapital",paymentMethods:["momo","card"]});
   setPayInvoice(null);
  }catch(e:any){setMsg(e?.message||"Impossible de démarrer le paiement.");setPaymentBusy(false);}
 }
