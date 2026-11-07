@@ -160,6 +160,37 @@ serve(async(req:Request)=>{
    const {data,error}=await admin.from("independent_service_invoices").select("id,proforma_id,invoice_number,status,currency,amount_due,amount_paid,issued_at,independent_service_proformas!inner(reference,client_id)").eq("independent_service_proformas.client_id",customerId).order("issued_at",{ascending:false});if(error)throw error;
    return json({success:true,invoices:(data||[]).map((invoice:any)=>({...invoice,quote_reference:invoice.independent_service_proformas?.reference}))});
   }
+
+  if(action==="prepare_payment"){
+   const customerId=await sessionCustomer(admin,String(body.access_token||""));
+   const invoiceId=String(body.invoice_id||"");const amount=Number(body.amount);
+   if(!/^[0-9a-f-]{36}$/i.test(invoiceId)||!Number.isFinite(amount)||amount<=0)return json({success:false,error:"Références ou montant invalides."},400);
+   const {data:invoice,error:invoiceError}=await admin.from("independent_service_invoices").select("id,invoice_number,status,currency,amount_due,amount_paid,independent_service_proformas!inner(client_id)").eq("id",invoiceId).eq("independent_service_proformas.client_id",customerId).maybeSingle();
+   if(invoiceError)throw invoiceError;if(!invoice)return json({success:false,error:"Facture introuvable pour ce compte."},404);
+   const remaining=Math.max(0,Number(invoice.amount_due)-Number(invoice.amount_paid));
+   if(invoice.status==="cancelled"||remaining<=0||amount>remaining)return json({success:false,error:"Le montant dépasse le solde restant ou la facture est clôturée."},409);
+   const {data:payment,error:paymentError}=await admin.from("independent_service_payments").insert({invoice_id:invoice.id,provider:"kkiapay",idempotency_key:"IS-PORTAL-"+crypto.randomUUID(),amount,currency:invoice.currency,status:"pending",provider_payload:{source:"customer_portal",customer_id:customerId,created_at:new Date().toISOString()}}).select("id").single();
+   if(paymentError)throw paymentError;
+   return json({success:true,payment_id:payment.id,amount});
+  }
+  if(action==="verify_payment"){
+   const customerId=await sessionCustomer(admin,String(body.access_token||""));
+   const paymentId=String(body.payment_id||""),transactionId=String(body.transaction_id||"");
+   if(!/^[0-9a-f-]{36}$/i.test(paymentId)||!transactionId.trim()||transactionId.length>128)return json({success:false,error:"Références de paiement invalides."},400);
+   const {data:payment,error:paymentError}=await admin.from("independent_service_payments").select("id,invoice_id,amount,status,provider_transaction_id,provider,independent_service_invoices!inner(id,independent_service_proformas!inner(client_id))").eq("id",paymentId).maybeSingle();
+   if(paymentError)throw paymentError;if(!payment||payment.provider!=="kkiapay"||payment.independent_service_invoices?.independent_service_proformas?.client_id!==customerId)return json({success:false,error:"Paiement introuvable pour ce compte."},404);
+   if(payment.status==="succeeded"&&payment.provider_transaction_id===transactionId)return json({success:true,already_confirmed:true});
+   if(payment.status==="succeeded")return json({success:false,error:"Ce paiement est déjà confirmé."},409);
+   const privateKey=Deno.env.get("KKIAPAY_PRIVATE_KEY");if(!privateKey)return json({success:false,error:"Vérification Kkiapay non configurée."},503);
+   const response=await fetch("https://api.kkiapay.me/api/v1/transactions/status",{method:"POST",headers:{"Content-Type":"application/json","x-private-key":privateKey},body:JSON.stringify({transactionId}),signal:AbortSignal.timeout(12000)});
+   if(!response.ok)return json({success:false,error:"Vérification Kkiapay indisponible."},502);
+   const providerData=await response.json();const status=String(providerData?.status||"").toUpperCase();
+   if(status!=="SUCCESS")return json({success:false,pending:true,error:"La transaction n’est pas encore confirmée par Kkiapay."},409);
+   const providerAmount=Number(providerData?.amount);if(!Number.isFinite(providerAmount)||Math.abs(providerAmount-Number(payment.amount))>1)return json({success:false,error:"Le montant confirmé ne correspond pas au paiement attendu."},409);
+   const {data:finalized,error:finalizeError}=await admin.rpc("finalize_independent_service_payment",{p_payment_id:payment.id,p_transaction_id:transactionId,p_provider_amount:providerAmount,p_provider_payload:{status,amount:providerAmount,source:providerData?.source||null,fees:providerData?.fees||0,verified_at:new Date().toISOString()}});
+   if(finalizeError)throw finalizeError;
+   return json({success:true,payment:finalized});
+  }
   if(action==="reply"){
    const quoteId=String(body.quote_id||""),kind=String(body.action_kind||""),reason=String(body.reason||"").trim();
    if(!["accept","refuse","request_change"].includes(kind))return json({success:false,error:"Action non valide."},400);
